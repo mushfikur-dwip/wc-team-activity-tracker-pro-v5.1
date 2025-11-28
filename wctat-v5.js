@@ -1,5 +1,5 @@
 jQuery(document).ready(function ($) {
-  /* ========== Existing Assignment Features ========== */
+  /* ========== Assignment Features ========== */
 
   // Assign to Me - Orders List
   $(document).on("click", ".wctat-assign-me", function (e) {
@@ -82,6 +82,8 @@ jQuery(document).ready(function ($) {
       }
     );
   });
+});
+
 
   /* ========== NEW: Notification System ========== */
 

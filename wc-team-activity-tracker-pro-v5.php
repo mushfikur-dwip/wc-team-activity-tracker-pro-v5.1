@@ -13,7 +13,6 @@ if ( ! defined('ABSPATH') ) exit;
 class WCTAT_Pro_V5 {
     private static $instance;
     private $table;
-    private $notifications_table;
     private $nonce = 'wctat_v5_nonce';
     private $opt = 'wctat_pro_v5';
     private $tracked_statuses = array();
@@ -26,7 +25,6 @@ class WCTAT_Pro_V5 {
     private function __construct(){
         global $wpdb;
         $this->table = $wpdb->prefix . 'wctat_pro_logs';
-        $this->notifications_table = $wpdb->prefix . 'wctat_notifications';
 
 /* Tracked statuses (dynamic columns in report) */
 $this->tracked_statuses = array(
@@ -53,11 +51,6 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
         // AJAX for assign
         add_action('wp_ajax_wctat_assign_me', array($this,'ajax_assign_me'));
         add_action('wp_ajax_wctat_assign_user', array($this,'ajax_assign_user'));
-        
-        // AJAX for notifications
-        add_action('wp_ajax_wctat_get_notifications', array($this,'ajax_get_notifications'));
-        add_action('wp_ajax_wctat_mark_notification_read', array($this,'ajax_mark_notification_read'));
-        add_action('wp_ajax_wctat_mark_all_read', array($this,'ajax_mark_all_read'));
 
         // Edit screen panel (works for classic & HPOS)
         add_action('admin_notices', array($this,'assignment_panel')); // fallback banner panel
@@ -113,22 +106,6 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
         ) $charset;";
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
         dbDelta($sql);
-        
-        // Create notifications table
-        $sql_notifications = "CREATE TABLE IF NOT EXISTS {$this->notifications_table} (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            user_id BIGINT UNSIGNED NOT NULL,
-            order_id BIGINT UNSIGNED NOT NULL,
-            type VARCHAR(60) NOT NULL,
-            message TEXT NOT NULL,
-            is_read TINYINT(1) DEFAULT 0,
-            created_at DATETIME NOT NULL,
-            PRIMARY KEY (id),
-            KEY user_id (user_id),
-            KEY is_read (is_read),
-            KEY created_at (created_at)
-        ) $charset;";
-        dbDelta($sql_notifications);
     }
 
     /* ---------- Helpers ---------- */
@@ -290,24 +267,6 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
     public function admin_bar_menu($wp_admin_bar){
         if ( ! is_admin() || ! current_user_can('edit_shop_orders') ) return;
         
-        // Add notifications menu (always visible in admin)
-        global $wpdb;
-        $user_id = get_current_user_id();
-        $unread_count = $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM {$this->notifications_table} 
-             WHERE user_id = %d AND is_read = 0",
-            $user_id
-        ));
-        
-        $title_text = $unread_count > 0 ? 'Notifications (' . $unread_count . ')' : 'Notifications';
-        
-        $wp_admin_bar->add_menu( array(
-            'id'=>'wctat_notifications',
-            'title'=>$title_text,
-            'href'=>'#',
-            'meta'=>array('class'=>'wctat-notifications-menu')
-        ));
-        
         $order_id = $this->current_order_id();
         if ( ! $order_id ) return;
 
@@ -383,117 +342,9 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
             'order_id'=>$order_id,'user_id'=>$user_id,'action'=>$action,
             'from_status'=>$from,'to_status'=>$to,'note'=>$note,'created_at'=>current_time('mysql')
         ), array('%d','%d','%s','%s','%s','%s','%s'));
-        
-        // Create notification for assigned user
-        $current_user_id = get_current_user_id();
-        
-        if ($action === 'assignment_changed') {
-            $assigned_user_id = get_post_meta($order_id, '_wctat_assigned_to', true);
-            // Only notify if someone else assigned this order (not self-assignment)
-            if ($assigned_user_id && $assigned_user_id != $current_user_id) {
-                $assigner = get_userdata($current_user_id);
-                $assigner_name = $assigner ? $assigner->display_name : 'Someone';
-                $message = sprintf('%s assigned order #%d to you', $assigner_name, $order_id);
-                $this->create_notification($assigned_user_id, $order_id, 'assignment', $message);
-            }
-        } elseif ($action === 'status_changed' && $to) {
-            $assigned_user_id = get_post_meta($order_id, '_wctat_assigned_to', true);
-            // Notify assigned user if someone else changed the status
-            if ($assigned_user_id && $assigned_user_id != $current_user_id) {
-                $updater = $current_user_id ? get_userdata($current_user_id) : null;
-                $updater_name = $updater ? $updater->display_name : 'System';
-                $status_labels = array(
-                    'completed' => 'Completed',
-                    'cancelled' => 'Cancelled',
-                    'confirm' => 'Confirm',
-                    'scheduled' => 'Scheduled',
-                    'couldnt-reach' => "Couldn't Reach",
-                    'processing' => 'Processing',
-                    'on-hold' => 'On Hold',
-                    'pending' => 'Pending'
-                );
-                $status_label = isset($status_labels[$to]) ? $status_labels[$to] : ucfirst($to);
-                $message = sprintf('%s changed order #%d status to %s', $updater_name, $order_id, $status_label);
-                $this->create_notification($assigned_user_id, $order_id, 'status_change', $message);
-            }
-        }
     }
 
     
-    /* ---------- Notifications ---------- */
-    private function create_notification($user_id, $order_id, $type, $message){
-        global $wpdb;
-        $wpdb->insert($this->notifications_table, array(
-            'user_id' => $user_id,
-            'order_id' => $order_id,
-            'type' => $type,
-            'message' => $message,
-            'is_read' => 0,
-            'created_at' => current_time('mysql')
-        ), array('%d','%d','%s','%s','%d','%s'));
-    }
-    
-    public function ajax_get_notifications(){
-        check_ajax_referer($this->nonce);
-        if ( ! current_user_can('edit_shop_orders') ) wp_send_json_error('no-permission');
-        
-        global $wpdb;
-        $user_id = get_current_user_id();
-        $notifications = $wpdb->get_results($wpdb->prepare(
-            "SELECT * FROM {$this->notifications_table} 
-             WHERE user_id = %d 
-             ORDER BY created_at DESC 
-             LIMIT 20",
-            $user_id
-        ));
-        
-        $unread_count = $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM {$this->notifications_table} 
-             WHERE user_id = %d AND is_read = 0",
-            $user_id
-        ));
-        
-        wp_send_json_success(array(
-            'notifications' => $notifications,
-            'unread_count' => intval($unread_count)
-        ));
-    }
-    
-    public function ajax_mark_notification_read(){
-        check_ajax_referer($this->nonce);
-        if ( ! current_user_can('edit_shop_orders') ) wp_send_json_error('no-permission');
-        
-        global $wpdb;
-        $notification_id = isset($_POST['notification_id']) ? intval($_POST['notification_id']) : 0;
-        if (!$notification_id) wp_send_json_error('invalid-id');
-        
-        $wpdb->update(
-            $this->notifications_table,
-            array('is_read' => 1),
-            array('id' => $notification_id, 'user_id' => get_current_user_id()),
-            array('%d'),
-            array('%d','%d')
-        );
-        
-        wp_send_json_success();
-    }
-    
-    public function ajax_mark_all_read(){
-        check_ajax_referer($this->nonce);
-        if ( ! current_user_can('edit_shop_orders') ) wp_send_json_error('no-permission');
-        
-        global $wpdb;
-        $wpdb->update(
-            $this->notifications_table,
-            array('is_read' => 1),
-            array('user_id' => get_current_user_id()),
-            array('%d'),
-            array('%d')
-        );
-        
-        wp_send_json_success();
-    }
-
     /* ---------- Custom Statuses ---------- */
     public function register_custom_statuses(){
         // Register custom order statuses so WooCommerce knows them.
@@ -544,6 +395,7 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
 /* ---------- Report ---------- */
     public function menu(){
         add_submenu_page('woocommerce','Team Performance (Pro v5)','Team Performance (Pro v5)','manage_woocommerce','wctat-pro-v5',array($this,'report'));
+        add_submenu_page('woocommerce','Activity Logs','Activity Logs','edit_shop_orders','wctat-activity-logs',array($this,'activity_logs_page'));
     }
     
     public function report(){
@@ -606,6 +458,145 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
             echo '<tr><td colspan="20">No data</td></tr>';
         }
         echo '</tbody></table></div>';
+    }
+
+    /* ---------- Activity Logs Page ---------- */
+    public function activity_logs_page(){
+        if ( ! current_user_can('edit_shop_orders') ) wp_die('No permission');
+        global $wpdb;
+        
+        // Filters
+        $filter_user = isset($_GET['filter_user']) ? intval($_GET['filter_user']) : 0;
+        $filter_order = isset($_GET['filter_order']) ? intval($_GET['filter_order']) : 0;
+        $filter_action = isset($_GET['filter_action']) ? sanitize_text_field($_GET['filter_action']) : '';
+        $start = isset($_GET['start']) ? sanitize_text_field($_GET['start']) : date('Y-m-d', strtotime('-7 days'));
+        $end   = isset($_GET['end']) ? sanitize_text_field($_GET['end'])   : date('Y-m-d');
+        
+        // Build query
+        $where = array("DATE(created_at) BETWEEN %s AND %s");
+        $prepare_vals = array($start, $end);
+        
+        if ($filter_user) {
+            $where[] = "user_id = %d";
+            $prepare_vals[] = $filter_user;
+        }
+        if ($filter_order) {
+            $where[] = "order_id = %d";
+            $prepare_vals[] = $filter_order;
+        }
+        if ($filter_action) {
+            $where[] = "action = %s";
+            $prepare_vals[] = $filter_action;
+        }
+        
+        $where_sql = implode(' AND ', $where);
+        $sql = "SELECT * FROM {$this->table} WHERE {$where_sql} ORDER BY created_at DESC LIMIT 200";
+        $logs = $wpdb->get_results( $wpdb->prepare($sql, $prepare_vals) );
+        
+        // Get users for filter
+        $users = get_users(array('role__in'=>array('administrator','shop_manager'),'fields'=>array('ID','display_name')));
+        
+        echo '<div class="wrap">';
+        echo '<h1>Activity Logs <span style="font-size:14px;color:#666;">— All Order Updates</span></h1>';
+        
+        // Filters Form
+        echo '<div style="background:#fff;padding:15px;border:1px solid #ccd0d4;margin:20px 0;border-radius:4px;">';
+        echo '<form method="GET" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;">';
+        echo '<input type="hidden" name="page" value="wctat-activity-logs"/>';
+        
+        echo '<div><label style="display:block;margin-bottom:4px;font-weight:600;">Date Range</label>';
+        echo '<input type="date" name="start" value="'.esc_attr($start).'" style="margin-right:5px;"/> ';
+        echo '<input type="date" name="end" value="'.esc_attr($end).'"/></div>';
+        
+        echo '<div><label style="display:block;margin-bottom:4px;font-weight:600;">User</label>';
+        echo '<select name="filter_user" style="min-width:150px;">';
+        echo '<option value="">All Users</option>';
+        foreach($users as $u){
+            printf('<option value="%d" %s>%s</option>', $u->ID, selected($filter_user,$u->ID,false), esc_html($u->display_name));
+        }
+        echo '</select></div>';
+        
+        echo '<div><label style="display:block;margin-bottom:4px;font-weight:600;">Order ID</label>';
+        echo '<input type="number" name="filter_order" value="'.esc_attr($filter_order).'" placeholder="Order #" style="width:100px;"/></div>';
+        
+        echo '<div><label style="display:block;margin-bottom:4px;font-weight:600;">Action Type</label>';
+        echo '<select name="filter_action" style="min-width:150px;">';
+        echo '<option value="">All Actions</option>';
+        echo '<option value="assignment_changed" '.selected($filter_action,'assignment_changed',false).'>Assignment Changed</option>';
+        echo '<option value="status_changed" '.selected($filter_action,'status_changed',false).'>Status Changed</option>';
+        echo '<option value="order_note_added" '.selected($filter_action,'order_note_added',false).'>Note Added</option>';
+        echo '</select></div>';
+        
+        submit_button('Filter Logs','secondary','',false, array('style'=>'margin:0;'));
+        
+        if($filter_user || $filter_order || $filter_action){
+            echo ' <a href="'.admin_url('admin.php?page=wctat-activity-logs').'" class="button" style="margin-left:5px;">Clear Filters</a>';
+        }
+        
+        echo '</form></div>';
+        
+        // Logs Table
+        echo '<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;overflow:hidden;">';
+        echo '<table class="wp-list-table widefat fixed striped" style="border:none;">';
+        echo '<thead><tr>';
+        echo '<th style="width:140px;">Date & Time</th>';
+        echo '<th style="width:100px;">Order</th>';
+        echo '<th style="width:140px;">User</th>';
+        echo '<th style="width:150px;">Action</th>';
+        echo '<th>Details</th>';
+        echo '</tr></thead><tbody>';
+        
+        if ($logs){
+            foreach($logs as $log){
+                $user_name = 'System';
+                if($log->user_id){
+                    $u = get_userdata($log->user_id);
+                    $user_name = $u ? $u->display_name : 'User#'.$log->user_id;
+                }
+                
+                $action_label = '';
+                $details = '';
+                
+                if($log->action === 'assignment_changed'){
+                    $action_label = '<span style="background:#0073aa;color:#fff;padding:3px 8px;border-radius:3px;font-size:11px;">Assignment</span>';
+                    $assigned_to = get_post_meta($log->order_id, '_wctat_assigned_to', true);
+                    if($assigned_to){
+                        $assigned_user = get_userdata($assigned_to);
+                        $details = 'Assigned to: <strong>'.($assigned_user ? $assigned_user->display_name : 'User#'.$assigned_to).'</strong>';
+                    } else {
+                        $details = 'Assignment cleared';
+                    }
+                    if($log->note) $details .= ' <em>('.esc_html($log->note).')</em>';
+                } elseif($log->action === 'status_changed'){
+                    $action_label = '<span style="background:#46b450;color:#fff;padding:3px 8px;border-radius:3px;font-size:11px;">Status Change</span>';
+                    $from_label = $log->from_status ? ucfirst(str_replace('-', ' ', $log->from_status)) : 'N/A';
+                    $to_label = $log->to_status ? ucfirst(str_replace('-', ' ', $log->to_status)) : 'N/A';
+                    $details = $from_label . ' → <strong>' . $to_label . '</strong>';
+                } elseif($log->action === 'order_note_added'){
+                    $action_label = '<span style="background:#826eb4;color:#fff;padding:3px 8px;border-radius:3px;font-size:11px;">Note Added</span>';
+                    $details = wp_trim_words(strip_tags($log->note), 15, '...');
+                } else {
+                    $action_label = '<span style="background:#999;color:#fff;padding:3px 8px;border-radius:3px;font-size:11px;">'.esc_html(ucfirst($log->action)).'</span>';
+                    $details = esc_html($log->note);
+                }
+                
+                $order_link = '<a href="'.admin_url('post.php?post='.$log->order_id.'&action=edit').'" target="_blank">#'.$log->order_id.'</a>';
+                
+                echo '<tr>';
+                printf('<td>%s</td>', date('M d, Y h:i A', strtotime($log->created_at)));
+                printf('<td>%s</td>', $order_link);
+                printf('<td>%s</td>', esc_html($user_name));
+                printf('<td>%s</td>', $action_label);
+                printf('<td>%s</td>', $details);
+                echo '</tr>';
+            }
+        } else {
+            echo '<tr><td colspan="5" style="text-align:center;padding:40px;color:#666;">No activity logs found for the selected filters.</td></tr>';
+        }
+        
+        echo '</tbody></table></div>';
+        echo '<p style="margin-top:15px;color:#666;"><strong>Total Logs:</strong> '.count($logs).' (showing latest 200)</p>';
+        echo '</div>';
     }
 
 
