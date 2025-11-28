@@ -13,6 +13,7 @@ if ( ! defined('ABSPATH') ) exit;
 class WCTAT_Pro_V5 {
     private static $instance;
     private $table;
+    private $notifications_table;
     private $nonce = 'wctat_v5_nonce';
     private $opt = 'wctat_pro_v5';
     private $tracked_statuses = array();
@@ -25,6 +26,7 @@ class WCTAT_Pro_V5 {
     private function __construct(){
         global $wpdb;
         $this->table = $wpdb->prefix . 'wctat_pro_logs';
+        $this->notifications_table = $wpdb->prefix . 'wctat_notifications';
 
 /* Tracked statuses (dynamic columns in report) */
 $this->tracked_statuses = array(
@@ -51,6 +53,11 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
         // AJAX for assign
         add_action('wp_ajax_wctat_assign_me', array($this,'ajax_assign_me'));
         add_action('wp_ajax_wctat_assign_user', array($this,'ajax_assign_user'));
+        
+        // AJAX for notifications
+        add_action('wp_ajax_wctat_get_notifications', array($this,'ajax_get_notifications'));
+        add_action('wp_ajax_wctat_mark_notification_read', array($this,'ajax_mark_notification_read'));
+        add_action('wp_ajax_wctat_mark_all_read', array($this,'ajax_mark_all_read'));
 
         // Edit screen panel (works for classic & HPOS)
         add_action('admin_notices', array($this,'assignment_panel')); // fallback banner panel
@@ -106,6 +113,22 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
         ) $charset;";
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
         dbDelta($sql);
+        
+        // Create notifications table
+        $sql_notifications = "CREATE TABLE IF NOT EXISTS {$this->notifications_table} (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            user_id BIGINT UNSIGNED NOT NULL,
+            order_id BIGINT UNSIGNED NOT NULL,
+            type VARCHAR(60) NOT NULL,
+            message TEXT NOT NULL,
+            is_read TINYINT(1) DEFAULT 0,
+            created_at DATETIME NOT NULL,
+            PRIMARY KEY (id),
+            KEY user_id (user_id),
+            KEY is_read (is_read),
+            KEY created_at (created_at)
+        ) $charset;";
+        dbDelta($sql_notifications);
     }
 
     /* ---------- Helpers ---------- */
@@ -266,6 +289,24 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
     /* ---------- Admin bar menu ---------- */
     public function admin_bar_menu($wp_admin_bar){
         if ( ! is_admin() || ! current_user_can('edit_shop_orders') ) return;
+        
+        // Add notification bell (always visible in admin)
+        global $wpdb;
+        $user_id = get_current_user_id();
+        $unread_count = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM {$this->notifications_table} 
+             WHERE user_id = %d AND is_read = 0",
+            $user_id
+        ));
+        
+        $badge = $unread_count > 0 ? ' <span class="wctat-notif-badge">' . $unread_count . '</span>' : '';
+        $wp_admin_bar->add_menu( array(
+            'id'=>'wctat_notifications',
+            'title'=>'<span class="dashicons dashicons-bell"></span>' . $badge,
+            'href'=>'#',
+            'meta'=>array('class'=>'wctat-notifications-menu','html'=>'<a href="#" id="wctat-notifications-trigger" class="ab-item"><span class="dashicons dashicons-bell"></span>' . $badge . '</a>')
+        ));
+        
         $order_id = $this->current_order_id();
         if ( ! $order_id ) return;
 
@@ -341,9 +382,108 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
             'order_id'=>$order_id,'user_id'=>$user_id,'action'=>$action,
             'from_status'=>$from,'to_status'=>$to,'note'=>$note,'created_at'=>current_time('mysql')
         ), array('%d','%d','%s','%s','%s','%s','%s'));
+        
+        // Create notification for assigned user
+        if ($action === 'assignment_changed') {
+            $assigned_user_id = get_post_meta($order_id, '_wctat_assigned_to', true);
+            if ($assigned_user_id && $assigned_user_id != $user_id) {
+                $assigner_name = get_userdata($user_id) ? get_userdata($user_id)->display_name : 'Someone';
+                $this->create_notification(
+                    $assigned_user_id,
+                    $order_id,
+                    'assignment',
+                    sprintf(__('%s assigned order #%d to you', 'wc-team-activity-tracker-pro'), $assigner_name, $order_id)
+                );
+            }
+        } elseif ($action === 'status_changed' && $to) {
+            $assigned_user_id = get_post_meta($order_id, '_wctat_assigned_to', true);
+            if ($assigned_user_id && $assigned_user_id != $user_id) {
+                $updater_name = $user_id ? (get_userdata($user_id) ? get_userdata($user_id)->display_name : 'Someone') : 'System';
+                $this->create_notification(
+                    $assigned_user_id,
+                    $order_id,
+                    'status_change',
+                    sprintf(__('%s changed order #%d status to %s', 'wc-team-activity-tracker-pro'), $updater_name, $order_id, $to)
+                );
+            }
+        }
     }
 
     
+    /* ---------- Notifications ---------- */
+    private function create_notification($user_id, $order_id, $type, $message){
+        global $wpdb;
+        $wpdb->insert($this->notifications_table, array(
+            'user_id' => $user_id,
+            'order_id' => $order_id,
+            'type' => $type,
+            'message' => $message,
+            'is_read' => 0,
+            'created_at' => current_time('mysql')
+        ), array('%d','%d','%s','%s','%d','%s'));
+    }
+    
+    public function ajax_get_notifications(){
+        check_ajax_referer($this->nonce);
+        if ( ! current_user_can('edit_shop_orders') ) wp_send_json_error('no-permission');
+        
+        global $wpdb;
+        $user_id = get_current_user_id();
+        $notifications = $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM {$this->notifications_table} 
+             WHERE user_id = %d 
+             ORDER BY created_at DESC 
+             LIMIT 20",
+            $user_id
+        ));
+        
+        $unread_count = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM {$this->notifications_table} 
+             WHERE user_id = %d AND is_read = 0",
+            $user_id
+        ));
+        
+        wp_send_json_success(array(
+            'notifications' => $notifications,
+            'unread_count' => intval($unread_count)
+        ));
+    }
+    
+    public function ajax_mark_notification_read(){
+        check_ajax_referer($this->nonce);
+        if ( ! current_user_can('edit_shop_orders') ) wp_send_json_error('no-permission');
+        
+        global $wpdb;
+        $notification_id = isset($_POST['notification_id']) ? intval($_POST['notification_id']) : 0;
+        if (!$notification_id) wp_send_json_error('invalid-id');
+        
+        $wpdb->update(
+            $this->notifications_table,
+            array('is_read' => 1),
+            array('id' => $notification_id, 'user_id' => get_current_user_id()),
+            array('%d'),
+            array('%d','%d')
+        );
+        
+        wp_send_json_success();
+    }
+    
+    public function ajax_mark_all_read(){
+        check_ajax_referer($this->nonce);
+        if ( ! current_user_can('edit_shop_orders') ) wp_send_json_error('no-permission');
+        
+        global $wpdb;
+        $wpdb->update(
+            $this->notifications_table,
+            array('is_read' => 1),
+            array('user_id' => get_current_user_id()),
+            array('%d'),
+            array('%d')
+        );
+        
+        wp_send_json_success();
+    }
+
     /* ---------- Custom Statuses ---------- */
     public function register_custom_statuses(){
         // Register custom order statuses so WooCommerce knows them.
