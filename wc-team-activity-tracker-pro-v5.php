@@ -63,8 +63,9 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
         add_action('woocommerce_order_status_changed', array($this,'log_status'), 10, 4);
         add_action('comment_post', array($this,'log_note'), 10, 2);
         
-        // Auto-assign shop managers when they update an existing order (no extra click required)
+        // Auto-assign when order is updated (both classic & HPOS)
         add_action('save_post_shop_order', array($this,'auto_assign_on_update'), 10, 3);
+        add_action('woocommerce_update_order', array($this,'auto_assign_on_hpos_update'), 10, 1);
 
         // Report
         add_action('admin_menu', array($this,'menu'));
@@ -202,32 +203,64 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
     }
 
     /**
-     * Auto-assign the current user (if they are a shop_manager) when they update an order.
-     * Only runs for real updates (not autosaves or revisions) and only if the order is currently unassigned.
-     * Hook: save_post_shop_order
+     * Auto-assign the current user when they update an order (Classic post editor).
+     * Works for both Administrator and Shop Manager roles.
+     * Only auto-assigns if the order is currently unassigned.
      */
     public function auto_assign_on_update($post_id, $post = null, $update = null){
+        // Skip autosaves and revisions
         if ( defined('DOING_AUTOSAVE') && DOING_AUTOSAVE ) return;
         if ( wp_is_post_revision($post_id) ) return;
         if ( ! is_admin() ) return;
-        // Only run for actual updates (not new order creation)
-        if ( $update === false ) return;
+        
+        // Check if user has permission
         if ( ! current_user_can('edit_shop_orders') ) return;
 
         $user_id = get_current_user_id();
         if ( ! $user_id ) return;
+        
         $user = get_userdata($user_id);
         if ( ! $user ) return;
-        // Only for shop managers
-        if ( ! in_array('shop_manager', (array) $user->roles, true) ) return;
+        
+        // Only for administrators and shop managers
+        $user_roles = (array) $user->roles;
+        if ( ! in_array('shop_manager', $user_roles, true) && ! in_array('administrator', $user_roles, true) ) return;
 
         // If already assigned to someone, do not override
         $current = get_post_meta($post_id, '_wctat_assigned_to', true);
         if ( $current && intval($current) ) return;
 
+        // Auto-assign to current user
         update_post_meta($post_id, '_wctat_assigned_to', $user_id);
         update_post_meta($post_id, '_wctat_assigned_at', current_time('mysql'));
         $this->insert_log($post_id, $user_id, 'assignment_changed', null, null, 'Auto-assigned on order update');
+    }
+
+    /**
+     * Auto-assign when order is updated via HPOS (WooCommerce's new order system).
+     */
+    public function auto_assign_on_hpos_update($order_id){
+        if ( ! is_admin() ) return;
+        if ( ! current_user_can('edit_shop_orders') ) return;
+
+        $user_id = get_current_user_id();
+        if ( ! $user_id ) return;
+        
+        $user = get_userdata($user_id);
+        if ( ! $user ) return;
+        
+        // Only for administrators and shop managers
+        $user_roles = (array) $user->roles;
+        if ( ! in_array('shop_manager', $user_roles, true) && ! in_array('administrator', $user_roles, true) ) return;
+
+        // If already assigned to someone, do not override
+        $current = get_post_meta($order_id, '_wctat_assigned_to', true);
+        if ( $current && intval($current) ) return;
+
+        // Auto-assign to current user
+        update_post_meta($order_id, '_wctat_assigned_to', $user_id);
+        update_post_meta($order_id, '_wctat_assigned_at', current_time('mysql'));
+        $this->insert_log($order_id, $user_id, 'assignment_changed', null, null, 'Auto-assigned on HPOS order update');
     }
 
     /* ---------- Admin bar menu ---------- */
