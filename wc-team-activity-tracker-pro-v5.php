@@ -55,8 +55,6 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
         // Edit screen panel (works for classic & HPOS)
         add_action('admin_notices', array($this,'assignment_panel')); // fallback banner panel
         add_action('admin_post_wctat_assign_save', array($this,'handle_assign_save'));
-        // Auto-assign shop managers when they update an existing order (no extra click required)
-        add_action('save_post_shop_order', array($this,'auto_assign_on_update'), 10, 3);
 
         // Admin bar quick assign (always visible on WC order edit screens)
         add_action('admin_bar_menu', array($this,'admin_bar_menu'), 100);
@@ -64,6 +62,9 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
         // Logging
         add_action('woocommerce_order_status_changed', array($this,'log_status'), 10, 4);
         add_action('comment_post', array($this,'log_note'), 10, 2);
+        
+        // Auto-assign shop managers when they update an existing order (no extra click required)
+        add_action('save_post_shop_order', array($this,'auto_assign_on_update'), 10, 3);
 
         // Report
         add_action('admin_menu', array($this,'menu'));
