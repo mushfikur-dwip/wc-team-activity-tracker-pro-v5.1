@@ -108,7 +108,7 @@ jQuery(document).ready(function ($) {
   // Toggle notifications dropdown
   $(document).on(
     "click",
-    "#wctat-notifications-trigger, #wp-admin-bar-wctat_notifications > .ab-item",
+    "#wp-admin-bar-wctat_notifications > a, #wctat-notifications-trigger",
     function (e) {
       e.preventDefault();
       e.stopPropagation();
@@ -156,17 +156,11 @@ jQuery(document).ready(function ($) {
 
   // Update badge count
   function updateNotificationBadge(count) {
-    var badge = $(".wctat-notif-badge");
+    var menuItem = $("#wp-admin-bar-wctat_notifications > a");
     if (count > 0) {
-      if (badge.length) {
-        badge.text(count);
-      } else {
-        $("#wp-admin-bar-wctat_notifications .ab-item").append(
-          '<span class="wctat-notif-badge">' + count + "</span>"
-        );
-      }
+      menuItem.text("Notifications (" + count + ")");
     } else {
-      badge.remove();
+      menuItem.text("Notifications");
     }
   }
 

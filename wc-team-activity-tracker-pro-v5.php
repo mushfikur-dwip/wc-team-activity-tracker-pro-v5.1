@@ -290,7 +290,7 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
     public function admin_bar_menu($wp_admin_bar){
         if ( ! is_admin() || ! current_user_can('edit_shop_orders') ) return;
         
-        // Add notification bell (always visible in admin)
+        // Add notifications menu (always visible in admin)
         global $wpdb;
         $user_id = get_current_user_id();
         $unread_count = $wpdb->get_var($wpdb->prepare(
@@ -299,12 +299,13 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
             $user_id
         ));
         
-        $badge = $unread_count > 0 ? ' <span class="wctat-notif-badge">' . $unread_count . '</span>' : '';
+        $title_text = $unread_count > 0 ? 'Notifications (' . $unread_count . ')' : 'Notifications';
+        
         $wp_admin_bar->add_menu( array(
             'id'=>'wctat_notifications',
-            'title'=>'<span class="dashicons dashicons-bell"></span>' . $badge,
+            'title'=>$title_text,
             'href'=>'#',
-            'meta'=>array('class'=>'wctat-notifications-menu','html'=>'<a href="#" id="wctat-notifications-trigger" class="ab-item"><span class="dashicons dashicons-bell"></span>' . $badge . '</a>')
+            'meta'=>array('class'=>'wctat-notifications-menu')
         ));
         
         $order_id = $this->current_order_id();
@@ -384,27 +385,36 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
         ), array('%d','%d','%s','%s','%s','%s','%s'));
         
         // Create notification for assigned user
+        $current_user_id = get_current_user_id();
+        
         if ($action === 'assignment_changed') {
             $assigned_user_id = get_post_meta($order_id, '_wctat_assigned_to', true);
-            if ($assigned_user_id && $assigned_user_id != $user_id) {
-                $assigner_name = get_userdata($user_id) ? get_userdata($user_id)->display_name : 'Someone';
-                $this->create_notification(
-                    $assigned_user_id,
-                    $order_id,
-                    'assignment',
-                    sprintf(__('%s assigned order #%d to you', 'wc-team-activity-tracker-pro'), $assigner_name, $order_id)
-                );
+            // Only notify if someone else assigned this order (not self-assignment)
+            if ($assigned_user_id && $assigned_user_id != $current_user_id) {
+                $assigner = get_userdata($current_user_id);
+                $assigner_name = $assigner ? $assigner->display_name : 'Someone';
+                $message = sprintf('%s assigned order #%d to you', $assigner_name, $order_id);
+                $this->create_notification($assigned_user_id, $order_id, 'assignment', $message);
             }
         } elseif ($action === 'status_changed' && $to) {
             $assigned_user_id = get_post_meta($order_id, '_wctat_assigned_to', true);
-            if ($assigned_user_id && $assigned_user_id != $user_id) {
-                $updater_name = $user_id ? (get_userdata($user_id) ? get_userdata($user_id)->display_name : 'Someone') : 'System';
-                $this->create_notification(
-                    $assigned_user_id,
-                    $order_id,
-                    'status_change',
-                    sprintf(__('%s changed order #%d status to %s', 'wc-team-activity-tracker-pro'), $updater_name, $order_id, $to)
+            // Notify assigned user if someone else changed the status
+            if ($assigned_user_id && $assigned_user_id != $current_user_id) {
+                $updater = $current_user_id ? get_userdata($current_user_id) : null;
+                $updater_name = $updater ? $updater->display_name : 'System';
+                $status_labels = array(
+                    'completed' => 'Completed',
+                    'cancelled' => 'Cancelled',
+                    'confirm' => 'Confirm',
+                    'scheduled' => 'Scheduled',
+                    'couldnt-reach' => "Couldn't Reach",
+                    'processing' => 'Processing',
+                    'on-hold' => 'On Hold',
+                    'pending' => 'Pending'
                 );
+                $status_label = isset($status_labels[$to]) ? $status_labels[$to] : ucfirst($to);
+                $message = sprintf('%s changed order #%d status to %s', $updater_name, $order_id, $status_label);
+                $this->create_notification($assigned_user_id, $order_id, 'status_change', $message);
             }
         }
     }
