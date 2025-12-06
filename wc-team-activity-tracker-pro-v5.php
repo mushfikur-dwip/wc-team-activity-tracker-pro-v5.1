@@ -2,7 +2,7 @@
 /*
 Plugin Name: WooCommerce Team Activity Tracker Pro
 Description: v5 — Compatible with WooCommerce Orders (new HPOS screens) and classic editor. Adds top admin bar Assign menu, edit-page assignment panel, list-page quick assign, logging & performance report.
-Version: 5.0.1
+Version: 5.0.2
 Author: Service Key
 Author URI: https://servicekey.com.bd/
 Text Domain: wc-team-activity-tracker-pro
@@ -395,7 +395,7 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
 /* ---------- Report ---------- */
     public function menu(){
         add_submenu_page('woocommerce','Team Performance (Pro v5)','Team Performance (Pro v5)','manage_woocommerce','wctat-pro-v5',array($this,'report'));
-        add_submenu_page('woocommerce','Activity Logs','Activity Logs','edit_shop_orders','wctat-activity-logs',array($this,'activity_logs_page'));
+        add_submenu_page('woocommerce','Activity Logs','Activity Logs','manage_options','wctat-activity-logs',array($this,'activity_logs_page'));
     }
     
     public function report(){
@@ -462,7 +462,7 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
 
     /* ---------- Activity Logs Page ---------- */
     public function activity_logs_page(){
-        if ( ! current_user_can('edit_shop_orders') ) wp_die('No permission');
+        if ( ! current_user_can('manage_options') ) wp_die('No permission');
         global $wpdb;
         
         // Filters
