@@ -26,18 +26,8 @@ class WCTAT_Pro_V5 {
         global $wpdb;
         $this->table = $wpdb->prefix . 'wctat_pro_logs';
 
-/* Tracked statuses (dynamic columns in report) */
-$this->tracked_statuses = array(
-    'completed'      => __('Completed','wc-team-activity-tracker-pro'),
-    'cancelled'      => __('Cancelled','wc-team-activity-tracker-pro'),
-    'confirm'        => __('Confirm','wc-team-activity-tracker-pro'),
-    'scheduled'      => __('Scheduled','wc-team-activity-tracker-pro'),
-    'couldnt-reach'  => __('Couldn\'t Reach','wc-team-activity-tracker-pro'),
-);
-/* Register custom order statuses so they show up in WC and can be set on orders */
-add_action('init', array($this,'register_custom_statuses'));
-add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
-
+        /* Initialize tracked statuses and register custom statuses on init hook */
+        add_action('init', array($this,'init_plugin'));
 
         register_activation_hook(__FILE__, array($this,'activate'));
         register_deactivation_hook(__FILE__, array($this,'deactivate'));
@@ -87,6 +77,23 @@ add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
     public function deactivate(){
         wp_clear_scheduled_hook('wctat_pro_weekly');
     }
+    
+    /* ---------- Init Plugin ---------- */
+    public function init_plugin(){
+        /* Tracked statuses (dynamic columns in report) */
+        $this->tracked_statuses = array(
+            'completed'      => __('Completed','wc-team-activity-tracker-pro'),
+            'cancelled'      => __('Cancelled','wc-team-activity-tracker-pro'),
+            'confirm'        => __('Confirm','wc-team-activity-tracker-pro'),
+            'scheduled'      => __('Scheduled','wc-team-activity-tracker-pro'),
+            'couldnt-reach'  => __('Couldn\'t Reach','wc-team-activity-tracker-pro'),
+        );
+        
+        /* Register custom order statuses so they show up in WC and can be set on orders */
+        $this->register_custom_statuses();
+        add_filter('wc_order_statuses', array($this,'add_custom_statuses'));
+    }
+    
     private function create_table(){
         global $wpdb;
         $charset = $wpdb->get_charset_collate();
